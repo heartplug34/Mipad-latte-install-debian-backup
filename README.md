@@ -1,12 +1,42 @@
 闲的没事干，折腾下MIpad2,安装的debian，跟workbuddy配合(ds4.1f)，这个仓库自用，如果能帮得到您的话就好QWQ
 
-# 小米平板 2（Mi Pad 2 / latte）刷 Debian 记录
+# Mipad（latte）install-debian-backup
 
-把 2015 年的小米平板 2 刷成能日常开机的 Debian 13（trixie），并把它跑通。
-这里只记录**怎么刷、怎么开机**，以及**踩过的坑**。
+把 2015 年的小米平板 2（Mi Pad 2 / latte）刷成能日常开机的 Debian 13（trixie）。
+这里只记录**怎么刷、怎么开机**，以及**踩过的坑**；**关键驱动文件在
+[Releases](https://github.com/heartplug34/Mipad-latte-install-debian-backup/releases)**。
 
-> 关键文件（latte 专用内核、WiFi 固件）在 **[Releases](../../releases)** 里下载。
-> 系统镜像等通用文件请自行从官方源下载，本仓库不重复托管 —— 见下方「需要准备的文件」。
+---
+
+## ⚡ 快速开始：一键脚本
+
+Debian 装好之后，剩下的都交给 `mipad2-setup.sh`：
+
+```bash
+# 1. 建个目录，把本仓库 Releases 里的关键文件都下到里面
+mkdir -p ~/latte-files && cd ~/latte-files
+#    需要：3 个 .deb + latte-ucm.zip + SHA256SUMS.txt + mipad2-setup.sh
+
+# 2. 一键安装：校验 → 内核/固件 → 音频 UCM → 补兜底引导 → 刷新 grub
+sudo bash mipad2-setup.sh --from-dir .
+
+# 3. 重启，在 GRUB「高级选项」里选 6.14 内核；
+#    确认能正常进系统后收尾（去 nomodeset、卸发行版内核）
+sudo bash mipad2-setup.sh --phase2
+```
+
+脚本的全部子命令：
+
+| 命令 | 作用 |
+|---|---|
+| `--check` | **只体检不改动**：硬件识别、网络、存储布局、驱动与引导现状 |
+| `--from-dir <目录>` | **一键装本地文件**：校验 sha256 → `dpkg -i` 内核与固件 → 装音频 UCM → 补 UEFI 兜底引导 → `update-grub` |
+| `--fix-grub` | 起不来时用：把 GRUB 重装到固件认的兜底路径 `/EFI/BOOT/BOOTX64.EFI` |
+| `--phase1` | 联网版全自动：升级系统 + 自动从上游 release 拉 latte 内核装上，然后重启 |
+| `--phase2 [--desktop phosh\|xfce\|lxqt]` | 换内核后收尾：去掉 nomodeset、卸载发行版内核、装轻量桌面 |
+
+> 脚本是**幂等**的，重复跑不会把系统搞坏。源码在 [`scripts/mipad2-setup.sh`](scripts/mipad2-setup.sh)，
+> Release 里也附了一份。**还没装 Debian 的话**先看第二节往下（或直接读完整指南）。
 
 ---
 
@@ -61,6 +91,9 @@ sha256sum -c SHA256SUMS.txt
 ## 三、刷机流程
 
 完整版见 **[docs/米Pad2-Debian安装指南.md](docs/米Pad2-Debian安装指南.md)**（含每一步的截图级细节和排错）。要点如下：
+
+> 装好 Debian 之后，**第 4～6 步（内核 / 驱动 / 桌面）可以全部交给上面的 `mipad2-setup.sh --from-dir .`**，
+> 下面的命令是为了讲清楚它到底做了什么。
 
 ### 1. 关掉安全启动（前提）
 
@@ -145,7 +178,7 @@ UEFI 规范要求固件在找不到启动变量时扫描 `\EFI\BOOT\BOOTX64.EFI`
 | 路径 | 内容 |
 |---|---|
 | [`docs/米Pad2-Debian安装指南.md`](docs/米Pad2-Debian安装指南.md) | 完整安装指南：准备 → BIOS → 分区 → 内核 → 驱动 → 排错附录 → 重装清单 |
-| [`scripts/mipad2-setup.sh`](scripts/mipad2-setup.sh) | 装完系统后的一键初始化脚本（换源、装基础工具、开 SSH 等） |
+| [`scripts/mipad2-setup.sh`](scripts/mipad2-setup.sh) | **一键脚本**：`--check` 体检 / `--from-dir` 装驱动 / `--fix-grub` 修引导 / `--phase1` 联网装内核 / `--phase2` 收尾装桌面 |
 | [`ucm/`](ucm/) | Cherry Trail + RT5659 的 ALSA UCM 音频配置 |
 | **Releases** | latte 专用内核、WiFi 固件、杂项固件 |
 

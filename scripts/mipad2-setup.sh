@@ -2,21 +2,25 @@
 #
 # mipad2-setup.sh — 小米平板2 (latte / Intel x5-Z8500) Debian 后置配置
 #
-# 用法（在平板上，需要 root）：
-#   sudo bash mipad2-setup.sh --check              # 只看系统状态，不做任何改动
-#   sudo bash mipad2-setup.sh --fix-grub           # 重装 GRUB 到 UEFI 兜底路径（起不来时用）
-#   sudo bash mipad2-setup.sh --phase1             # 升级系统 + 装 latte 内核，然后重启
-#   sudo bash mipad2-setup.sh --phase2 --desktop phosh
+# 用法（在平板上，除 --check 外都需要 root）：
+#   sudo bash mipad2-setup.sh --check                  # 只看系统状态，不做任何改动
+#   sudo bash mipad2-setup.sh --from-dir ./latte-files # 一键装本地已下载的 Release 文件
+#   sudo bash mipad2-setup.sh --fix-grub               # 重装 GRUB 到 UEFI 兜底路径
+#   sudo bash mipad2-setup.sh --phase1                 # 升级系统 + 装 latte 内核，然后重启
+#   sudo bash mipad2-setup.sh --phase2 --desktop phosh # 收尾 + 装轻量桌面
 #
 # 设计成幂等的：重复跑不会把系统搞坏。
 #
 set -uo pipefail
+
+usage() { sed -n '2,13p' "$0" | sed 's/^#\s\?//'; }
 
 REPO="xiaomi-latte-dev/linux_latte"
 GRUB=/etc/default/grub
 DEB_DEFAULT_KERNEL="linux-image-amd64"
 PHASE=""
 DESKTOP="none"
+FROM_DIR=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -24,8 +28,11 @@ while [ $# -gt 0 ]; do
     --phase1)  PHASE="phase1" ;;
     --phase2)  PHASE="phase2" ;;
     --fix-grub) PHASE="fixgrub" ;;
+    --from-dir) PHASE="fromdir"; FROM_DIR="${2:-}"
+                [ -n "$FROM_DIR" ] || { echo "用法: --from-dir <放 Release 文件的目录>"; exit 2; }
+                shift ;;
     --desktop) DESKTOP="${2:-none}"; shift ;;
-    -h|--help) sed -n '2,14p' "$0"; exit 0 ;;
+    -h|--help) usage; exit 0 ;;
     *) echo "未知参数: $1（用 --help 看用法）"; exit 2 ;;
   esac
   shift
@@ -158,6 +165,100 @@ EOF
   exit 0
 fi
 
+# ---------------------------------------------------------------- from-dir
+# 一键安装「已下载好的 Release 关键文件」：校验 → 装内核/固件 → 装音频 UCM → 刷引导
+if [ "$PHASE" = "fromdir" ]; then
+  step "D1 检查目录：$FROM_DIR"
+  [ -d "$FROM_DIR" ] || die "目录不存在：$FROM_DIR"
+  cd "$FROM_DIR" || die "进不去 $FROM_DIR"
+  echo "  $(pwd)"
+
+  step "D2 校验下载文件"
+  if [ -f SHA256SUMS.txt ]; then
+    # 只校验目录里确实存在的文件 —— 有人可能只下 .deb，不下 ucm.zip
+    SUMFILE="$(mktemp)"
+    present=0; missing=0
+    while read -r sum name; do
+      f="${name#\*}"
+      if [ -f "$f" ]; then
+        printf '%s  %s\n' "$sum" "$f" >> "$SUMFILE"
+        present=$((present + 1))
+      else
+        missing=$((missing + 1))
+      fi
+    done < SHA256SUMS.txt
+    if [ "$present" -gt 0 ]; then
+      if sha256sum -c "$SUMFILE"; then ok "校验通过（$present 个文件）"
+      else rm -f "$SUMFILE"; die "校验失败：文件损坏或没下完，重新下载后再试"; fi
+    else
+      warn "SHA256SUMS.txt 里列出的文件，目录里一个都没有"
+    fi
+    [ "$missing" -gt 0 ] && warn "还有 $missing 个文件没下载，对应步骤会跳过"
+    rm -f "$SUMFILE"
+  else
+    warn "目录里没有 SHA256SUMS.txt，跳过校验"
+  fi
+
+  step "D3 补 UEFI 兜底引导文件"
+  if [ -f /boot/efi/EFI/debian/grubx64.efi ] && [ ! -f /boot/efi/EFI/BOOT/BOOTX64.EFI ]; then
+    mkdir -p /boot/efi/EFI/BOOT
+    cp /boot/efi/EFI/debian/grubx64.efi /boot/efi/EFI/BOOT/BOOTX64.EFI \
+      && ok "已补上 /EFI/BOOT/BOOTX64.EFI（绕过固件不写 NVRAM）"
+  elif [ -f /boot/efi/EFI/BOOT/BOOTX64.EFI ]; then
+    ok "兜底引导文件已在位"
+  else
+    warn "找不到 /boot/efi/EFI/debian/grubx64.efi —— 先按指南附录 A.5 处理"
+  fi
+
+  step "D4 安装内核与固件（.deb）"
+  deb_found=0
+  for f in *.deb; do
+    [ -e "$f" ] || continue
+    echo "  dpkg -i $f"
+    dpkg -i "$f" || apt-get -y -f install || warn "$f 安装有报错，看一下上面的输出"
+    deb_found=1
+  done
+  [ "$deb_found" = 1 ] && ok "已安装 .deb" || warn "目录里没有 .deb"
+
+  step "D5 安装音频 UCM 配置"
+  if [ -f latte-ucm.zip ]; then
+    TMPU="$(mktemp -d)"; trap 'rm -rf "$TMPU"' EXIT
+    if unzip -q -o latte-ucm.zip -d "$TMPU"; then
+      cp -r "$TMPU"/latte-ucm/. /usr/share/alsa/ucm2/ && ok "UCM 已装入 /usr/share/alsa/ucm2/"
+    else
+      warn "解压 latte-ucm.zip 失败"
+    fi
+  elif [ -d latte-ucm ]; then
+    cp -r latte-ucm/. /usr/share/alsa/ucm2/ && ok "UCM 已装入 /usr/share/alsa/ucm2/"
+  else
+    warn "没找到 latte-ucm.zip 或 latte-ucm/ 目录，跳过（音频可能没声音）"
+  fi
+
+  step "D6 刷新引导"
+  update-grub >/dev/null 2>&1 && ok "grub 已更新" || warn "update-grub 失败"
+
+  step "D7 结果"
+  echo "  已装内核:"; dpkg -l 'linux-image-*' 2>/dev/null | awk '/^ii/{print "    "$2" "$3}'
+  echo "  grub 参数: $(grep -E '^GRUB_CMDLINE_LINUX_DEFAULT' $GRUB 2>/dev/null)"
+
+  cat <<'EOF'
+
+──────────────────────────────────────────────
+ 装完了，接下来按顺序做：
+
+   1) sudo reboot
+   2) 在 GRUB「高级选项」里选新装的 6.14 内核启动
+      （默认项可能还是发行版内核）
+   3) 确认能正常进系统、显卡与触屏可用后，再删掉发行版内核
+      并去掉 nomodeset：
+        sudo bash mipad2-setup.sh --phase2
+
+ 起不来就在 GRUB 里按 e，把 nomodeset 加回去应急。
+──────────────────────────────────────────────
+EOF
+  exit 0
+fi
+
 # ---------------------------------------------------------------- phase 1
 if [ "$PHASE" = "phase1" ]; then
   step "P1-0 确保有 UEFI 兜底引导文件"
@@ -193,9 +294,14 @@ if [ "$PHASE" = "phase1" ]; then
   TAG="$(grep -o '"tag_name": *"[^"]*"' "$TMP/rel.json" | head -1 | sed 's/.*: *"//; s/"$//')"
   ok "最新 release: $TAG"
 
-  mapfile -t URLS < <(grep -o 'https://[^"]*' "$TMP/rel.json" | grep -E '\.(deb|txt|zst)$' | sort -u)
+  # 只取真正需要的：内核 / 头文件 / libc-dev 的 .deb，以及固件 .txt。
+  # 必须排掉 -dbg（约 146 MB）、linux-upstream-* 与 .zst（约 229 MB）：
+  # 平板的 /tmp 是 tmpfs（直接吃内存），下几百 MB 会把机器拖垮甚至 OOM。
+  mapfile -t URLS < <(grep -o 'https://[^"]*' "$TMP/rel.json" \
+    | grep -E '\.(deb|txt)$' \
+    | grep -vE -- '-dbg|linux-upstream' | sort -u)
   [ "${#URLS[@]}" -gt 0 ] || die "release 里没找到可下载文件"
-  echo "  发现 ${#URLS[@]} 个附件"
+  echo "  发现 ${#URLS[@]} 个附件（已跳过 -dbg / .zst / linux-upstream 大包）"
 
   for u in "${URLS[@]}"; do
     f="$TMP/$(basename "$u")"
