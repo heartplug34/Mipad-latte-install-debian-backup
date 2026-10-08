@@ -1,3 +1,5 @@
+闲的没事干，折腾下MIpad2,安装的debian，跟workbuddy配合(ds4.1f)，这个仓库自用，如果能帮得到您的话就好QWQ
+
 # 小米平板 2（Mi Pad 2 / latte）刷 Debian 记录
 
 把 2015 年的小米平板 2 刷成能日常开机的 Debian 13（trixie），并把它跑通。
